@@ -1,0 +1,1 @@
+/mnt/disk2/lmh/KITTI360/data_2d_raw/2013_05_28_drive_0000_sync/image_00/data_rect/0000000744.png
