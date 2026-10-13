@@ -39,7 +39,7 @@ from sscbench_dataset import SSCBenchDataset
 from pathlib import Path
 
 RELOAD_DATASET = True
-DATASET_LENGTH = 50 # 2000 # 100
+DATASET_LENGTH = 2000 # 50
 FULL_EVAL = False  # 是否对完整数据集进行评估
 SAMPLE_EVERY = None
 SAMPLE_OFFSET = 2
@@ -71,13 +71,16 @@ PLOT_ALL_IMAGES = False
 # GENERATE_PLY_FILES = False  # True 需要同时设置 USE_GROW=False, USE_ADDITIONAL_INVALIDS=False
 GENERATE_PLY_FILES = True
 PLY_ONLY_FOV = True
-PLY_IDS = None  # None 表示处理所有帧，或指定列表如 list(range(1000, 1600))
+# PLY_IDS = None  # None 表示处理所有帧，或指定列表如 list(range(1000, 1600))
+# PLY_IDS = [250, 835, 2235, 3385, 4235, 4875, 5550, 6035, 7010, 7860, 8575, 9410, 10975, 11260, 11460, 11885]
+PLY_IDS = [10600, 9445, 2065, 12650, 12105, 2290, 5945, 5785, 10920, 7905, 5180, 2515, 1615, 590, 10340, 300, 12490, 12780, 2580, 10055, 175, 4280, 8960, 12200, 655, 9060, 5660, 1520, 5210, 4665, 8290, 9510]
+
 # PLY_PATH = Path("/home/lmh/dino-da3-adaptive-sampling1/out/voxel_outputs")
 PLY_PATH = Path("/home/lmh/s4c-DHS-RayTransformer/out/voxel_outputs-noGrow")
 PLY_SIZES = [12.8, 25.6, 51.2]  # 添加 12.8
 
 GENERATE_STATISTICS = False
-
+ 
 if GENERATE_PLY_FILES:
     # assert (not USE_GROW) and (not USE_ADDITIONAL_INVALIDS) and VOXEL_SIZE == 0.1
     assert VOXEL_SIZE == 0.1

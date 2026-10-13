@@ -30,11 +30,14 @@ from mathutils import Matrix, Vector
 def parse_args():
     argv = sys.argv
     argv = argv[argv.index("--") + 1:] if "--" in argv else []
-    args = {"ply": None, "out": None, "ply_dir": None, "out_dir": None}
+    args = {"ply": None, "out": None, "ply_dir": None, "out_dir": None,
+            "transparent": False}
     i = 0
     while i < len(argv):
         k = argv[i].lstrip("-")
-        if k in args and i + 1 < len(argv):
+        if k == "transparent":
+            args[k] = True; i += 1
+        elif k in args and i + 1 < len(argv):
             args[k] = argv[i + 1]; i += 2
         else:
             i += 1
@@ -97,8 +100,10 @@ USER_CAM_MATRIX = [
     [ 0.0,             0.0,             0.0,             1.0],
 ]
 
-# 沿视线方向拉近，不改变朝向；正值=拉近，单位米
-DOLLY = 12.0
+# Do not compensate for a wrong camera by dollying it into the scene.  Export
+# a final matrix from Blender and replace USER_CAM_MATRIX as a whole.  Keep
+# this at zero so every method uses exactly the same camera.
+DOLLY = 10.0
 import numpy as np
 _M = np.array(USER_CAM_MATRIX, dtype=float)
 _M[:3, 3] += -_M[:3, 2] * DOLLY
@@ -135,7 +140,7 @@ def setup_lighting():
             bg.inputs["Strength"].default_value = 0.5  # 环境光适中
 
 
-def setup_render(out_path, w=2400, h=1350):
+def setup_render(out_path, w=2400, h=1350, transparent=False):
     sc = bpy.context.scene
     try:
         sc.render.engine = 'BLENDER_EEVEE_NEXT'
@@ -149,10 +154,11 @@ def setup_render(out_path, w=2400, h=1350):
     if bg:
         bg.inputs["Color"].default_value = (1, 1, 1, 1)
         bg.inputs["Strength"].default_value = 0.5
-    sc.render.film_transparent = False
+    sc.render.film_transparent = transparent
     sc.render.resolution_x = w        # 提高分辨率 2400x1350
     sc.render.resolution_y = h
     sc.render.image_settings.file_format = 'PNG'
+    sc.render.image_settings.color_mode = 'RGBA' if transparent else 'RGB'
     sc.render.filepath = str(out_path)
     try:
         sc.eevee.taa_render_samples = 128   # 提高采样, 更清晰
@@ -160,14 +166,14 @@ def setup_render(out_path, w=2400, h=1350):
         pass
 
 
-def render_one(ply, out):
+def render_one(ply, out, transparent=False):
     print(f"[渲染] {ply}")
     clear_scene()
     obj = import_ply(ply)
     print(f"  {len(obj.data.vertices)} 顶点")
     setup_emission_material(obj)
     setup_camera()
-    setup_render(out)
+    setup_render(out, transparent=transparent)
     setup_lighting()   # 材质和世界设好后再加光
     bpy.context.view_layer.update()
     bpy.ops.render.render(write_still=True)
@@ -177,14 +183,14 @@ def render_one(ply, out):
 def main():
     a = parse_args()
     if a["ply"] and a["out"]:
-        render_one(a["ply"], a["out"])
+        render_one(a["ply"], a["out"], transparent=a["transparent"])
     elif a["ply_dir"] and a["out_dir"]:
         pd = Path(a["ply_dir"]); od = Path(a["out_dir"])
         od.mkdir(parents=True, exist_ok=True)
         for ply in sorted(pd.glob("*.ply")):
-            render_one(ply, od / (ply.stem + ".png"))
+            render_one(ply, od / (ply.stem + ".png"), transparent=a["transparent"])
     else:
-        print("用法: --ply x.ply --out x.png  或  --ply_dir d/ --out_dir d/")
+        print("用法: --ply x.ply --out x.png [--transparent]  或  --ply_dir d/ --out_dir d/ [--transparent]")
 
 
 if __name__ == "__main__":
