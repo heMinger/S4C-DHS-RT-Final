@@ -63,6 +63,11 @@ model_conf:
     conf_epsilon: 0.1
     conf_threshold: 0.2
 
+    # A5: occlusion supervision (DA3 depth as surface prior)
+    occlusion_supervision_enabled: true
+    free_space_margin: 0.5
+    surface_band: 0.5
+
     ray_attention:
         enabled: true
         d_model: 32
@@ -108,6 +113,7 @@ loss:
     lambda_edge_aware_smoothness: 0.001
     lambda_segmentation: 0.02
     lambda_density_entropy: 0
+    lambda_occlusion: 0.1
 
     segmentation_class_weights:
         0: 1 # 'road'

@@ -24,7 +24,7 @@ from models.common.model.scheduler import make_scheduler
 from models.common.render import NeRFRenderer
 from models.da3_depth_generator import get_da3_generator, DA3DepthGenerator
 from models.bts.model.image_processor import make_image_processor, RGBProcessor
-from models.bts.model.loss import ReconstructionLoss, compute_errors_l1ssim
+from models.bts.model.loss import ReconstructionLoss, compute_errors_l1ssim, occlusion_supervision_loss
 from models.bts.model.models_bts import BTSNet
 from models.bts.model.ray_sampler import ImageRaySampler, PatchRaySampler, RandomRaySampler
 from scripts.inference_setup import render_profile, render_segmentation_profile
@@ -43,6 +43,11 @@ class BTSWrapper(nn.Module):
         self.z_near = config["z_near"]
         self.z_far = config["z_far"]
         self.ray_batch_size = config["ray_batch_size"]
+        self.occlusion_supervision_enabled = config.get("occlusion_supervision_enabled", True)
+        self.free_space_margin = config.get("free_space_margin", 0.5)
+        self.surface_band = config.get("surface_band", 0.5)
+        self.occlusion_conf_threshold = config.get("conf_threshold", 0.2)
+        self.occlusion_conf_epsilon = config.get("conf_epsilon", 0.1)
         frames_render = config.get("n_frames_render", 2)
         self.frame_sample_mode = config.get("frame_sample_mode", "default")
         self.loss_from_single_img = config.get("loss_from_single_img", False)
@@ -368,12 +373,32 @@ class BTSWrapper(nn.Module):
                                                           conf_values=seg_da3_conf_values)
             with profiler.record_function("trainer_render"):
                 render_dict = self.renderer(all_rays, want_weights=True, want_alphas=True, want_rgb_samps=True,
+                                            want_z_samps=True,
                                             da3_depths=all_da3_depths, adaptive_sampling_config=adaptive_config,
                                             conf_values=all_da3_conf_values)
 
             if "fine" not in render_dict:
                 render_dict["fine"] = dict(render_dict["coarse"])
                 render_segmentation_dict["fine"] = dict(render_segmentation_dict["coarse"])
+
+            # A5 occlusion supervision loss (DA3 depth as surface prior)
+            if self.occlusion_supervision_enabled and all_da3_depths is not None:
+                coarse_w = render_dict["coarse"]["weights"]
+                coarse_z = render_dict["coarse"]["z_samps"]
+                n_smps = coarse_w.shape[-1]
+                occ_loss, occ_stats = occlusion_supervision_loss(
+                    coarse_w.reshape(-1, n_smps),
+                    coarse_z.reshape(-1, n_smps),
+                    all_da3_depths.reshape(-1),
+                    all_da3_conf_values.reshape(-1) if all_da3_conf_values is not None else None,
+                    free_space_margin=self.free_space_margin,
+                    surface_band=self.surface_band,
+                    conf_threshold=self.occlusion_conf_threshold,
+                    conf_epsilon=self.occlusion_conf_epsilon,
+                    z_near=self.z_near,
+                )
+                data["_occlusion_loss"] = occ_loss
+                data["_occlusion_stats"] = occ_stats
 
             render_dict["rgb_gt"] = all_rgb_gt
             render_dict["rays"] = all_rays
