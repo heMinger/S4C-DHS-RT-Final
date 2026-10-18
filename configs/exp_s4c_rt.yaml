@@ -1,6 +1,11 @@
 # 消融实验: S4C + Ray Transformer (无 DHS 自适应采样)
 # 对比链: S4C / S4C+RT / S4C+DHS / S4C+DHS+RT
 # 本配置 = 基线(7b81b11) + 关闭 adaptive_sampling，保留 ray_attention
+# 训练起点: 从 S4C(176000) 权重出发 (即 BTS 预训练再经 S4C 训练的 checkpoint)
+#   通过 resume_from + reset_training_state=true 只加载模型权重，
+#   optimizer / lr_scheduler / iteration 计数全部从头开始。
+#   (原 use_backbone 机制硬编码 out/kitti_360/pretrained 路径 -> /mnt/disk1，
+#    本机不可达，改用本地可访问的 S4C checkpoint)
 
 defaults:
     - default
@@ -9,13 +14,14 @@ defaults:
 
 name: "s4c_rt_no_dhs"
 model: "bts"
-output_path: "out/kitti_360"
+output_path: "out/kitti_360/s4c_rt"
 
 num_epochs: 60
 batch_size: 8
 accumulation_steps: 2
 
-use_backbone: false
+resume_from: /home/lmh/s4c/out/training_checkpoint_176000.pt
+reset_training_state: true
 grad_clip_max_norm: 1.0
 
 
