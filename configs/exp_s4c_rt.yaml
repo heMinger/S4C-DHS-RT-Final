@@ -14,7 +14,7 @@ defaults:
 
 name: "s4c_rt_no_dhs"
 model: "bts"
-output_path: "out/kitti_360/s4c_rt"
+output_path: "out/s4c_rt"
 
 num_epochs: 60
 batch_size: 8
