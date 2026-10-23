@@ -35,7 +35,7 @@ from utils.projection_operations import distance_to_z, invert_pose
 
 
 class BTSWrapper(nn.Module):
-    def __init__(self, renderer, config, eval_nvs=False) -> None:
+    def __init__(self, renderer, config, eval_nvs=False, render_profiles=False) -> None:
         super().__init__()
 
         self.renderer = renderer
@@ -81,6 +81,7 @@ class BTSWrapper(nn.Module):
         self.val_sampler = ImageRaySampler(self.z_near, self.z_far)
 
         self.eval_nvs = eval_nvs
+        self.render_profiles = render_profiles
         if self.eval_nvs:
             self.lpips = lpips.LPIPS(net="alex")
 
@@ -430,9 +431,11 @@ class BTSWrapper(nn.Module):
                  ],
                 dtype=torch.float32, device=device).view(1, 4, 4)
 
-            # predict the profiles
-            data["profiles"] = [render_profile(self.renderer.net, cam_incl_adjust=cam_incl_adjust)]
-            data["segmentation_profiles"] = [render_segmentation_profile(self.renderer.net, cam_incl_adjust)]
+            # predict the profiles (only for TensorBoard visualization, not metrics;
+            # disabled by default because each profile queries 64*256*256 ~= 4.2M points)
+            if self.render_profiles:
+                data["profiles"] = [render_profile(self.renderer.net, cam_incl_adjust=cam_incl_adjust)]
+                data["segmentation_profiles"] = [render_segmentation_profile(self.renderer.net, cam_incl_adjust)]
 
         if self.training:
             self._counter += 1
@@ -633,7 +636,9 @@ def get_dataflow(config, logger=None):
     # Enable LiDAR depth loading for evaluation metrics
     # ============================================================
     train_dataset.return_depth = True
-    train_dataset.return_lidar_depth = True
+    # LiDAR depth is only used for validation metrics (compute_lidar_depth_metrics),
+    # never in the training forward/loss; skip loading it in the train set for speed.
+    train_dataset.return_lidar_depth = False
 
     # Change eval dataset to only use a single prediction and to return gt depth.
     test_dataset.frame_count = 1 if isinstance(train_dataset, KittiRawDataset) or isinstance(train_dataset, KittiOdometryDataset) else 2
@@ -689,7 +694,8 @@ def initialize(config: dict, logger=None):
     model = BTSWrapper(
         renderer,
         config["model_conf"],
-        mode == "nvs"
+        mode == "nvs",
+        render_profiles=config.get("render_profiles", False)
     )
 
     model = idist.auto_model(model)
@@ -794,12 +800,14 @@ def visualize(engine: Engine, logger: TensorboardLogger, step: int, tag: str):
     # seg_horizontal_slices = torch.stack([make_grid(seg_horizontal_slices[i * 3:(i + 1) * 3], nrow=1) for i in range(n_seg)], dim=0)
     seg_horizontal_density = torch.stack([make_grid(depth_profile[i * 3:(i + 1) * 3], nrow=1) for i in range(take_n)], dim=0)
 
-    # profile plotting
-    profiles = torch.stack(data["profiles"], dim=0)
-    profiles = color_tensor(profiles, cmap="magma", norm=True)
-    segmentation_profiles = torch.stack(data["segmentation_profiles"], dim=0)
-    # TODO: change n_classes depending on the segmentation mode
-    segmentation_profiles = torch.tensor(color_segmentation_tensor(segmentation_profiles))
+    # profile plotting (only present when render_profiles is enabled)
+    has_profiles = "profiles" in data
+    if has_profiles:
+        profiles = torch.stack(data["profiles"], dim=0)
+        profiles = color_tensor(profiles, cmap="magma", norm=True)
+        segmentation_profiles = torch.stack(data["segmentation_profiles"], dim=0)
+        # TODO: change n_classes depending on the segmentation mode
+        segmentation_profiles = torch.tensor(color_segmentation_tensor(segmentation_profiles))
 
     n_row_seg = int(n_seg ** .5)
 
@@ -809,8 +817,9 @@ def visualize(engine: Engine, logger: TensorboardLogger, step: int, tag: str):
     # seg_horizontal_grid = make_grid(seg_horizontal_slices, nrow=n_row_seg)
     seg_horizontal_density_grid = make_grid(seg_horizontal_density, nrow=n_row_seg)
 
-    profiles_grid = make_grid(profiles).permute(2, 0, 1)
-    segmentation_profiles_grid = make_grid(segmentation_profiles).permute(2, 0, 1)
+    if has_profiles:
+        profiles_grid = make_grid(profiles).permute(2, 0, 1)
+        segmentation_profiles_grid = make_grid(segmentation_profiles).permute(2, 0, 1)
 
     images_grid = make_grid(images, nrow=nrow)
     recon_imgs_grid = make_grid(recon_imgs, nrow=nrow)
@@ -829,8 +838,9 @@ def visualize(engine: Engine, logger: TensorboardLogger, step: int, tag: str):
     # writer.add_image(f"{tag}/segmentation_horizontal_slices", seg_horizontal_grid.cpu(), global_step=step)
     writer.add_image(f"{tag}/segmentation_horizontal_density", seg_horizontal_density_grid.cpu(), global_step=step)
 
-    writer.add_image(f"{tag}/profiles", profiles_grid.cpu(), global_step=step)
-    writer.add_image(f"{tag}/profiles_segmentation", segmentation_profiles_grid.cpu(), global_step=step)
+    if has_profiles:
+        writer.add_image(f"{tag}/profiles", profiles_grid.cpu(), global_step=step)
+        writer.add_image(f"{tag}/profiles_segmentation", segmentation_profiles_grid.cpu(), global_step=step)
 
     writer.add_image(f"{tag}/input_im", images_grid.cpu(), global_step=step)
     writer.add_image(f"{tag}/recon_im", recon_imgs_grid.cpu(), global_step=step)

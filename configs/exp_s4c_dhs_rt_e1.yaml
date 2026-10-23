@@ -21,6 +21,17 @@ num_epochs: 60
 batch_size: 8
 accumulation_steps: 2
 
+# ============================================================
+# 训练效率优化 (不改算法定义):
+#   render_profiles: 关闭验证时的 density/semantic profile 渲染
+#                    (仅 TensorBoard 可视化, 不参与指标; 每图省 ~840万点查询)
+#   validate_every:  验证频率 1000 -> 5000 iter
+#   log_every_iters: TensorBoard 日志频率 1 -> 50
+# ============================================================
+render_profiles: false
+validate_every: 5000
+log_every_iters: 50
+
 resume_from: /home/lmh/s4c/out/training_checkpoint_176000.pt
 reset_training_state: true
 grad_clip_max_norm: 1.0

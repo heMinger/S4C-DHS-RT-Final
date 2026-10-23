@@ -68,7 +68,7 @@ class DataloaderDummy(DataLoader):
 
 class BTSWrapperOverfit(BTSWrapper):
     def __init__(self, renderer, config, eval_nvs=False, size=None) -> None:
-        super().__init__(renderer, config, eval_nvs)
+        super().__init__(renderer, config, eval_nvs, render_profiles=True)
 
         self.encoder_dummy = EncoderDummy(size, config["encoder"]["d_out"], num_views=1)
 
