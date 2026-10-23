@@ -18,8 +18,9 @@ EPS = 1e-3
 
 class RaySigmaCorrector(nn.Module):
     """
-    Sigma correction via ray self-attention on coordinate encoding only.
-    Q/K/V all use coordinate encoding (39-dim, driven by 13-dim z variation).
+    Sigma correction via ray self-attention.
+    E1: Q/K/V read the full mlp_input (image features + coordinate encoding,
+    103-dim), giving attention appearance evidence instead of coordinates only.
     Outputs a scalar sigma correction per point.
     proj_out is zero-initialized so correction ≡ 0 at init (safe warm-start),
     but gradients flow normally through proj_out because h (attention output)
@@ -48,20 +49,20 @@ class RaySigmaCorrector(nn.Module):
         nn.init.zeros_(self.proj_out.weight)
         nn.init.zeros_(self.proj_out.bias)
 
-    def forward(self, coord_enc, K):
+    def forward(self, x, K):
         """
         Args:
-            coord_enc: (n, n_pts, d_coord) — coordinate encoding portion of mlp_input
+            x: (n, n_pts, d_coord) — full mlp_input (image features + coord encoding)
             K: samples per ray
         Returns:
             (n, n_pts, 1) sigma correction (zero at init)
         """
-        n, n_pts, d = coord_enc.shape
+        n, n_pts, d = x.shape
         if n_pts % K != 0:
-            return torch.zeros(n, n_pts, 1, device=coord_enc.device)
+            return torch.zeros(n, n_pts, 1, device=x.device)
 
         n_rays = n_pts // K
-        h = coord_enc.reshape(n * n_rays, K, d)
+        h = x.reshape(n * n_rays, K, d)
 
         h = self.proj_in(h)
         h_attn, _ = self.attn(h, h, h)
@@ -130,7 +131,8 @@ class BTSNet(torch.nn.Module):
         ray_attn_conf = conf.get("ray_attention", {})
         self.ray_attention_enabled = ray_attn_conf.get("enabled", False)
         if self.ray_attention_enabled:
-            d_coord = self.code_xyz.d_out  # 39-dim coordinate encoding
+            # E1: feed full mlp_input (image features + coord encoding) into RT
+            d_coord = self.encoder.latent_size + self.code_xyz.d_out  # 64 + 39 = 103
             self.ray_attention = RaySigmaCorrector(
                 d_coord=d_coord,
                 d_model=ray_attn_conf.get("d_model", 32),
@@ -410,9 +412,9 @@ class BTSNet(torch.nn.Module):
             # Ray Sigma Correction: adjust raw sigma using depth-position attention
             if (self.ray_attention_enabled and ray_K is not None
                     and ray_K > 1 and n_pts % ray_K == 0):
-                d_img = self.encoder.latent_size
-                coord_enc = mlp_input[:, :, d_img:]
-                sigma_correction = self.ray_attention(coord_enc, ray_K)
+                # E1: pass full mlp_input (image features + coord encoding) so RT
+                # sees appearance evidence, not just coordinate encoding.
+                sigma_correction = self.ray_attention(mlp_input, ray_K)
                 raw_sigma = raw_sigma + sigma_correction
 
             if self.sample_color:
