@@ -149,6 +149,26 @@ def unproj_map(width, height, f, c=None, device="cpu", norm_dir=True):
     return unproj
 
 
+def cos_theta_map(width, height, focal, c=None, device="cpu"):
+    """
+    Per-pixel cos(theta) map in the camera coordinate system, where theta is
+    the angle between the camera ray and the optical (+z) axis.
+
+    This is the z-component of the normalized camera ray direction produced by
+    unproj_map(). It is used to convert an axial (z-buffer) depth to the
+    distance along the ray:  depth_distance = depth_z / cos(theta).
+
+    Must use the SAME focal/principal-point convention as gen_rays() so that
+    the resulting ray distances align with the (world-frame) ray directions.
+
+    :param width, height: image size
+    :param focal: focal length(s); float, [fx, fy], or (n, 2)
+    :param c: principal point(s); None (image center) or matching shape to focal
+    :return: (n, height, width) tensor of cos(theta) in (0, 1]
+    """
+    return unproj_map(width, height, focal, c=c, device=device, norm_dir=True)[..., 2]
+
+
 def coord_from_blender(dtype=torch.float32, device="cpu"):
     """
     Blender to standard coordinate system transform.

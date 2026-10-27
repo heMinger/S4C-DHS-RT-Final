@@ -157,6 +157,12 @@ class PatchRaySampler(RaySampler):
 
             rays = util.gen_rays(poses[n_].view(-1, 4, 4), w, h, focal=focals, c=centers, z_near=self.z_near, z_far=self.z_far)
 
+            # Camera-frame cos(theta) map, used to convert DA3 axial (z-buffer)
+            # depth to distance along the ray before adaptive sampling.
+            cos_theta = None
+            if has_da3_depths:
+                cos_theta = util.cos_theta_map(w, h, focals, c=centers, device=device)  # (v, h, w)
+
             patch_coords_v = torch.randint(0, v, (self._patch_count, ))
             patch_coords_y = torch.randint(0, h-self.patch_size_y, (self._patch_count, ))
             patch_coords_x = torch.randint(0, w-self.patch_size_x, (self._patch_count, ))
@@ -181,6 +187,9 @@ class PatchRaySampler(RaySampler):
                 if has_da3_depths:
                     # da3_depths shape: (n, v, 1, h, w) -> access (n_, v_, 0, y:y+h, x:x+w)
                     da3_patch = da3_depths[n_, v_, 0, y:y+self.patch_size_y, x:x+self.patch_size_x].reshape(-1)
+                    # Convert axial (z-buffer) depth to distance along the ray
+                    cos_patch = cos_theta[v_, y:y+self.patch_size_y, x:x+self.patch_size_x].reshape(-1)
+                    da3_patch = da3_patch / cos_patch.clamp_min(1e-6)
                     sample_da3_depths.append(da3_patch)
                 
                 if has_da3_confs:
@@ -339,6 +348,12 @@ class ImageRaySampler(RaySampler):
             rays = util.gen_rays(poses[n_].view(-1, 4, 4), self.width, self.height, focal=focals, c=centers, z_near=self.z_near, z_far=self.z_far, norm_dir=self.norm_dir).view(-1, 8)
             all_rays.append(rays)
 
+            # Camera-frame cos(theta) map, used to convert DA3 axial (z-buffer)
+            # depth to distance along the ray before adaptive sampling.
+            cos_theta = None
+            if has_da3_depths:
+                cos_theta = util.cos_theta_map(self.width, self.height, focals, c=centers, device=poses.device)  # (v, h, w)
+
             if images is not None:
                 rgb_gt = images[n_].view(-1, self.channels, self.height, self.width)
                 rgb_gt = (rgb_gt.permute(0, 2, 3, 1).contiguous().reshape(-1, self.channels))
@@ -351,7 +366,9 @@ class ImageRaySampler(RaySampler):
                 
             if has_da3_depths:
                 # da3_depths shape: (n, v, 1, h, w)
-                da3_flat = da3_depths[n_].view(-1, 1, self.height, self.width)
+                da3_flat = da3_depths[n_].view(-1, 1, self.height, self.width)  # (v, 1, h, w)
+                # Convert axial (z-buffer) depth to distance along the ray
+                da3_flat = da3_flat / cos_theta.unsqueeze(1).clamp_min(1e-6)
                 da3_flat = da3_flat.permute(0, 2, 3, 1).contiguous().reshape(-1)
                 all_da3_depths.append(da3_flat)
             
