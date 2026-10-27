@@ -4,8 +4,8 @@
 #   DA3 轴向 z-buffer / cosθ -> 沿射线距离 (采样中心正确)
 #   与 A(原实现) 单变量对照, 量化单位错误造成的损失。
 # 其余配置与 E1 完全一致 (DHS + RT 图像特征版, S4C-176000 warm-start)。
-# 训练步数: stop_iteration=10000 (~0.82 epoch), 配合 validate_every=2500
-#   在 10000 iter 内拿到 4 个验证点 (2500/5000/7500/10000) 以便对比趋势。
+# 训练步数: stop_iteration=5000 (~0.41 epoch), 配合 validate_every=1000
+#   在 5000 iter 内拿到 5 个验证点 (1000/2000/3000/4000/5000) 以便对比趋势。
 # ============================================================
 
 defaults:
@@ -20,17 +20,17 @@ output_path: "out/ablation_z2dist/fixed"
 num_epochs: 60
 batch_size: 8
 accumulation_steps: 2
-stop_iteration: 10000
+stop_iteration: 5000
 
 # ============================================================
 # 训练效率优化 (不改算法定义):
 #   render_profiles: 关闭验证时的 density/semantic profile 渲染
 #                    (仅 TensorBoard 可视化, 不参与指标; 每图省 ~840万点查询)
-#   validate_every:  验证频率 -> 2500 iter (更频繁, 便于对照趋势)
+#   validate_every:  验证频率 -> 1000 iter (更频繁, 便于对照趋势)
 #   log_every_iters: TensorBoard 日志频率 1 -> 50
 # ============================================================
 render_profiles: false
-validate_every: 2500
+validate_every: 1000
 log_every_iters: 50
 
 resume_from: /home/lmh/s4c/out/training_checkpoint_176000.pt
