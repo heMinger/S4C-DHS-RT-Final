@@ -1,0 +1,175 @@
+# ============================================================
+# 第一组消融实验 A(原实现, 对照基线):
+#   da3_z_to_distance: false
+#   直接用 DA3 轴向 z-buffer 当沿射线距离 (采样中心偏移, 有单位 bug)
+#   用于量化"轴向 Z 未转沿射线距离"造成的损失。
+# 其余配置与 E1 完全一致 (DHS + RT 图像特征版, S4C-176000 warm-start),
+#   仅通过 da3_z_to_distance=false 单变量切换。
+# 训练步数: stop_iteration=10000 (~0.82 epoch), 配合 validate_every=2500
+#   在 10000 iter 内拿到 4 个验证点 (2500/5000/7500/10000) 以便对比趋势。
+# ============================================================
+
+defaults:
+    - default
+    - data: kitti_360
+    - _self_
+
+name: "ablation_z2dist_orig"
+model: "bts"
+output_path: "out/ablation_z2dist/orig"
+
+num_epochs: 60
+batch_size: 8
+accumulation_steps: 2
+stop_iteration: 10000
+
+# ============================================================
+# 训练效率优化 (不改算法定义):
+#   render_profiles: 关闭验证时的 density/semantic profile 渲染
+#                    (仅 TensorBoard 可视化, 不参与指标; 每图省 ~840万点查询)
+#   validate_every:  验证频率 -> 2500 iter (更频繁, 便于对照趋势)
+#   log_every_iters: TensorBoard 日志频率 1 -> 50
+# ============================================================
+render_profiles: false
+validate_every: 2500
+log_every_iters: 50
+
+resume_from: /home/lmh/s4c/out/training_checkpoint_176000.pt
+reset_training_state: true
+grad_clip_max_norm: 1.0
+
+
+segmentation_mode: 'panoptic_deeplab'
+
+save_best:
+    metrics:
+        - metric: a1_lidar
+          sign: 1
+        - metric: abs_rel_lidar
+          sign: -1
+        - metric: a1
+          sign: 1
+        - metric: seg_acc
+          sign: 1
+
+data:
+    data_fc: 2
+    image_size: [192, 640]
+    color_aug: true
+    is_preprocessed: true
+    fisheye_rotation: [0, -15]
+    depth_mode: "offline"
+
+model_conf:
+    arch: "BTSNet"
+    use_code: true
+    prediction_mode: default
+
+    code:
+        num_freqs: 6
+        freq_factor: 1.5
+        include_input: true
+
+    encoder:
+        type: "monodepth2"
+        freeze: false
+        pretrained: true
+        resnet_layers: 50
+        num_ch_dec: [32,32,64,128,256]
+        d_out: 64
+
+    # DA3-Guided Adaptive Sampling (保留 DHS)
+    adaptive_sampling: true
+    # true  = 修正后: DA3 轴向 z-buffer / cosθ → 沿射线距离 (采样中心正确)
+    # false = 原实现: 直接用 DA3 轴向 z 当沿射线距离 (采样中心偏移, 用于消融对照)
+    da3_z_to_distance: false
+    n_surface_samples: 32
+    n_global_samples: 32
+    absrel_prior: 0.12
+    min_thickness: 0.5
+    conf_epsilon: 0.1
+    conf_threshold: 0.2
+
+    # Ray Transformer (Sigma Corrector) — E1: Q/K/V 读全量 mlp_input
+    ray_attention:
+        enabled: true
+        d_model: 32
+        n_head: 4
+        d_ffn: 64
+        use_ffn: true
+
+    mlp_coarse:
+        type : "resnet"
+        n_blocks : 0
+        d_hidden : 64
+
+    mlp_fine:
+        type : "empty"
+        n_blocks : 1
+        d_hidden : 128
+
+    mlp_segmentation:
+        type: "resnet"
+        n_blocks: 0
+        d_hidden: 64
+
+    z_near: 3
+    z_far: 80
+    inv_z: true
+
+    n_frames_encoder: 1
+    n_frames_render: 2
+    frame_sample_mode: kitti360-mono
+
+    sample_mode: patch
+    patch_size: 8
+    ray_batch_size: 4096
+
+    flip_augmentation: true
+
+    learn_empty: false
+    code_mode: z
+
+loss:
+    criterion: "l1+ssim"
+    invalid_policy: weight_guided
+    lambda_edge_aware_smoothness: 0.001
+    lambda_segmentation: 0.02
+    lambda_density_entropy: 0
+
+    segmentation_class_weights:
+        0: 1 # 'road'
+        1: 10 # 'sidewalk'
+        2: 1 # 'building'
+        3: 1 # 'wall'
+        4: 1 # 'fence'
+        5: 10 # 'pole'
+        6: 5 # 'traffic light'
+        7: 10 # 'traffic sign'
+        8: 1 # 'vegetation'
+        9: 1 # 'terrain'
+        10: 1 # 'sky'
+        11: 5 # 'person'
+        12: 1 # 'rider'
+        13: 1 # 'car'
+        14: 1 # 'truck'
+        15: 1 # 'bus'
+        16: 1 # 'train'
+        17: 1 # 'motorcycle'
+        18: 1 # 'bicycle'
+
+scheduler:
+    type: step
+    step_size: 120000
+    gamma: 0.1
+
+renderer:
+    n_coarse : 64
+    n_fine : 0
+    n_fine_depth : 0
+    depth_std : 1.0
+    sched : []
+    white_bkgd : false
+    lindisp: true
+    hard_alpha_cap: true
+    eval_batch_size: 200000
