@@ -78,6 +78,9 @@ model_conf:
 
     # DA3-Guided Adaptive Sampling (保留 DHS)
     adaptive_sampling: true
+    # true  = 修正后: DA3 轴向 z-buffer / cosθ → 沿射线距离 (采样中心正确)
+    # false = 原实现: 直接用 DA3 轴向 z 当沿射线距离 (采样中心偏移, 用于消融对照)
+    da3_z_to_distance: true
     n_surface_samples: 32
     n_global_samples: 32
     absrel_prior: 0.12

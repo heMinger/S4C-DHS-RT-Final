@@ -80,6 +80,13 @@ class BTSWrapper(nn.Module):
 
         self.val_sampler = ImageRaySampler(self.z_near, self.z_far)
 
+        # DA3 axial z-buffer -> ray-distance conversion switch.
+        # True  = corrected impl (z / cos(theta)); False = original impl (raw z),
+        # used for the "original vs fixed" ablation while sharing the same code.
+        self.da3_z_to_distance = config.get("da3_z_to_distance", True)
+        self.train_sampler.da3_z_to_distance = self.da3_z_to_distance
+        self.val_sampler.da3_z_to_distance = self.da3_z_to_distance
+
         self.eval_nvs = eval_nvs
         self.render_profiles = render_profiles
         if self.eval_nvs:

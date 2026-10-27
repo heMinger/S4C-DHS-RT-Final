@@ -152,6 +152,31 @@ class TestSamplerIntegration(unittest.TestCase):
         self.assertIsNone(depths)
         self.assertIsNone(confs)
 
+    def test_patch_sampler_disable_conversion(self):
+        """da3_z_to_distance=False must reproduce the original (buggy) impl:
+        raw axial z is passed through unchanged, no division by cos(theta)."""
+        n, v, h, w = 1, 2, 48, 64
+        images, poses, projs, da3_depths, da3_confs = _make_inputs(n, v, h, w)
+        sampler = PatchRaySampler(ray_batch_size=256, z_near=1.0, z_far=80.0, patch_size=8)
+        sampler.da3_z_to_distance = False
+        _, _, depths, confs = sampler.sample(
+            images, poses, projs, da3_depths=da3_depths, da3_confs=da3_confs
+        )
+        self.assertEqual(tuple(depths.shape), (n, 256))
+        self.assertTrue(torch.allclose(depths, torch.full_like(depths, 10.0), atol=1e-5))
+
+    def test_image_sampler_disable_conversion(self):
+        """Same as above, for the ImageRaySampler (validation path)."""
+        n, v, h, w = 1, 2, 48, 64
+        images, poses, projs, da3_depths, da3_confs = _make_inputs(n, v, h, w)
+        sampler = ImageRaySampler(z_near=1.0, z_far=80.0, height=h, width=w)
+        sampler.da3_z_to_distance = False
+        _, _, depths, confs = sampler.sample(
+            images, poses, projs, da3_depths=da3_depths, da3_confs=da3_confs
+        )
+        self.assertEqual(tuple(depths.shape), (n, v * h * w))
+        self.assertTrue(torch.allclose(depths, torch.full_like(depths, 10.0), atol=1e-5))
+
 
 if __name__ == "__main__":
     unittest.main()
