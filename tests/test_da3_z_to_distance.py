@@ -177,6 +177,23 @@ class TestSamplerIntegration(unittest.TestCase):
         self.assertEqual(tuple(depths.shape), (n, v * h * w))
         self.assertTrue(torch.allclose(depths, torch.full_like(depths, 10.0), atol=1e-5))
 
+    def test_image_sampler_norm_dir_false_skips_conversion(self):
+        """With norm_dir=False the ray direction is NOT unit length (its
+        magnitude is 1/cos(theta)), so converting z -> z/cos(theta) would
+        double-correct. The conversion must be skipped, passing raw z through."""
+        n, v, h, w = 1, 2, 48, 64
+        images, poses, projs, da3_depths, da3_confs = _make_inputs(n, v, h, w)
+        sampler = ImageRaySampler(
+            z_near=1.0, z_far=80.0, height=h, width=w, norm_dir=False
+        )
+        # da3_z_to_distance defaults to True, but norm_dir=False must gate it off.
+        self.assertTrue(getattr(sampler, "da3_z_to_distance", True))
+        _, _, depths, confs = sampler.sample(
+            images, poses, projs, da3_depths=da3_depths, da3_confs=da3_confs
+        )
+        self.assertEqual(tuple(depths.shape), (n, v * h * w))
+        self.assertTrue(torch.allclose(depths, torch.full_like(depths, 10.0), atol=1e-5))
+
 
 if __name__ == "__main__":
     unittest.main()

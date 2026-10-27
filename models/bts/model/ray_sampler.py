@@ -353,8 +353,12 @@ class ImageRaySampler(RaySampler):
 
             # Camera-frame cos(theta) map, used to convert DA3 axial (z-buffer)
             # depth to distance along the ray before adaptive sampling.
+            # Only convert when ray directions are unit vectors (norm_dir=True).
+            # With norm_dir=False the un-normalized ray direction already has
+            # magnitude 1/cos(theta), so raw axial z already yields the correct
+            # distance along the ray; dividing by cos(theta) would double-correct.
             cos_theta = None
-            if has_da3_depths and getattr(self, "da3_z_to_distance", True):
+            if has_da3_depths and getattr(self, "da3_z_to_distance", True) and getattr(self, "norm_dir", True):
                 cos_theta = util.cos_theta_map(self.width, self.height, focals, c=centers, device=poses.device)  # (v, h, w)
 
             if images is not None:
