@@ -39,7 +39,7 @@ from sscbench_dataset import SSCBenchDataset
 from pathlib import Path
 
 RELOAD_DATASET = True
-DATASET_LENGTH = 2000 # 50
+DATASET_LENGTH = 50 # 2000 # 50
 FULL_EVAL = False  # 是否对完整数据集进行评估
 SAMPLE_EVERY = None
 SAMPLE_OFFSET = 2
@@ -48,11 +48,11 @@ SAMPLE_RANGE = None
 
 SIZE = 51.2 # Can be: 51.2, 25.6, 12.8
 SIZES = (12.8, 25.6, 51.2)
-# VOXEL_SIZE = 0.2 # Needs: 0.2 % VOXEL_SIZE == 0
-VOXEL_SIZE = 0.1
+VOXEL_SIZE = 0.2 # Needs: 0.2 % VOXEL_SIZE == 0
+# VOXEL_SIZE = 0.1
 
-# USE_ADDITIONAL_INVALIDS = True  # True = 排除遮挡区域，IoU 更高
-USE_ADDITIONAL_INVALIDS = False
+USE_ADDITIONAL_INVALIDS = True  # True = 排除遮挡区域，IoU 更高
+# USE_ADDITIONAL_INVALIDS = False
 
 TEST_ALPHA_CUTOFFS = False
 SEARCH_VALUES = [10e-1, 10e-2, 10e-3, 10e-4, 10e-5, 10e-6, 10e-7]
@@ -60,16 +60,16 @@ SEARCH_VALUES = [10e-1, 10e-2, 10e-3, 10e-4, 10e-5, 10e-6, 10e-7]
 SIGMA_CUTOFF = 0.25  # default; can be overridden via CLI
 
 USE_ALPHA_WEIGHTING = True
-# USE_GROW = True  # True = 膨胀预测，填补空洞，IoU 更高
-USE_GROW = False
+USE_GROW = True  # True = 膨胀预测，填补空洞，IoU 更高
+# USE_GROW = False
 
 CREATE_SIGMA_TRADEOFF_PLOT = True
 SIGMA_VALUES = [1, 0.5, 0.25, 0.1, 0.05, 0.025, 0.01, 0.005, 0.0025, 0.001]
 
 PLOT_ALL_IMAGES = False
 
-# GENERATE_PLY_FILES = False  # True 需要同时设置 USE_GROW=False, USE_ADDITIONAL_INVALIDS=False
-GENERATE_PLY_FILES = True
+GENERATE_PLY_FILES = False  # True 需要同时设置 USE_GROW=False, USE_ADDITIONAL_INVALIDS=False
+# GENERATE_PLY_FILES = True
 PLY_ONLY_FOV = True
 # PLY_IDS = None  # None 表示处理所有帧，或指定列表如 list(range(1000, 1600))
 # PLY_IDS = [250, 835, 2235, 3385, 4235, 4875, 5550, 6035, 7010, 7860, 8575, 9410, 10975, 11260, 11460, 11885]
