@@ -1,0 +1,161 @@
+--- a/models/bts/model/loss.py
++++ b/models/bts/model/loss.py
+@@ -40,6 +40,70 @@
+     return errors
+ 
+ 
++def occlusion_supervision_loss(weights, z_samps, da3_depths, da3_confs=None,
++                               invalid=None, free_space_margin=0.5,
++                               surface_band=0.5, conf_threshold=0.2,
++                               conf_epsilon=0.1, z_near=3.0):
++    """
++    3-state occlusion supervision along each ray using DA3 depth as surface prior.
++
++    For each ray with a valid/confident DA3 depth d*, enforce:
++      - free space  (z < d* - free_space_margin): accumulated weight -> 0
++      - surface band(|z - d*| <= surface_band):   accumulated weight -> 1
++      - behind      (z > d* + surface_band):      masked (unknown)
++
++    :param weights:     (B, K) compositing weights along each ray
++    :param z_samps:     (B, K) sampled depths along each ray
++    :param da3_depths:  (B,)   DA3 depth prior per ray (<=0 or <=z_near => masked)
++    :param da3_confs:   (B,)   raw DA3 confidence values (None disables conf masking)
++    :param invalid:     (B, K, V) per-sample validity (None disables sample masking)
++    :return: scalar loss (differentiable), stats dict
++    """
++    if weights.numel() == 0:
++        return torch.zeros((), device=weights.device), {}
++
++    B, K = weights.shape
++    d = da3_depths.reshape(B, 1).clamp(min=1e-3)  # (B, 1)
++
++    # Valid ray mask: depth valid AND (optionally) confident enough
++    ray_valid = (da3_depths.reshape(B) > z_near)
++    if da3_confs is not None:
++        norm_conf = ((da3_confs.reshape(B) - 1.0) / 5.5535).clamp(min=conf_epsilon, max=1.0)
++        ray_valid = ray_valid & (norm_conf >= conf_threshold)
++
++    free_mask = (z_samps < (d - free_space_margin)).float()  # (B, K)
++    surf_mask = ((z_samps >= (d - surface_band)) &
++                 (z_samps <= (d + surface_band))).float()    # (B, K)
++
++    if invalid is not None:
++        # mark samples invalid in the majority of views
++        invalid_sample = (invalid.float().mean(dim=-1) > 0.5).float()  # (B, K)
++        free_mask = free_mask * (1 - invalid_sample)
++        surf_mask = surf_mask * (1 - invalid_sample)
++
++    free_sum = (weights * free_mask).sum(dim=-1)  # (B,)
++    surf_sum = (weights * surf_mask).sum(dim=-1)  # (B,)
++
++    free_loss = free_sum ** 2
++    surf_loss = (1.0 - surf_sum) ** 2
++
++    ray_loss = free_loss + surf_loss  # (B,)
++
++    ray_valid_f = ray_valid.float()
++    n_valid = ray_valid_f.sum()
++    if n_valid > 0:
++        loss = (ray_loss * ray_valid_f).sum() / n_valid
++    else:
++        loss = (ray_loss * ray_valid_f).sum()
++
++    stats = {
++        "n_valid": n_valid.item(),
++        "free_sum_mean": (free_sum * ray_valid_f).sum().item() / max(n_valid.item(), 1),
++        "surf_sum_mean": (surf_sum * ray_valid_f).sum().item() / max(n_valid.item(), 1),
++    }
++    return loss, stats
++
++
+ class ReconstructionLoss:
+     def __init__(self, config, use_automasking=False) -> None:
+         super().__init__()
+@@ -73,6 +137,7 @@
+         self.lambda_surfaceness_reg = config.get("lambda_surfaceness_reg", 0)
+         self.lambda_edge_aware_smoothness = config.get("lambda_edge_aware_smoothness", 0)
+         self.lambda_depth_smoothness = config.get("lambda_depth_smoothness", 0)
++        self.lambda_occlusion = config.get("lambda_occlusion", 0)
+ 
+         self.median_thresholding = config.get("median_thresholding", False)
+ 
+@@ -84,7 +149,7 @@
+ 
+     @staticmethod
+     def get_loss_metric_names():
+-        return ["loss", "loss_rgb_coarse", "loss_rgb_fine", "loss_ray_entropy", "loss_depth_reg"]
++        return ["loss", "loss_rgb_coarse", "loss_rgb_fine", "loss_ray_entropy", "loss_depth_reg", "loss_occlusion"]
+ 
+     def __call__(self, data):
+         with profiler.record_function("loss_computation"):
+@@ -347,6 +412,13 @@
+         loss_dict["loss_eas"] = loss_eas.item()
+         loss_dict["loss_depth_smoothness"] = loss_depth_smoothness.item()
+         loss_dict["loss_invalid_ratio"] = invalid_coarse.float().mean().item()
++
++        loss_occlusion = torch.tensor(0.0, device=loss.device)
++        if self.lambda_occlusion > 0 and "_occlusion_loss" in data:
++            loss_occlusion = data["_occlusion_loss"]
++            loss = loss + self.lambda_occlusion * loss_occlusion
++        loss_dict["loss_occlusion"] = loss_occlusion.detach().item()
++
+         loss_dict["loss"] = loss.item()
+ 
+         return loss, loss_dict
+--- a/models/bts/trainer.py
++++ b/models/bts/trainer.py
+@@ -24,7 +24,7 @@
+ from models.common.render import NeRFRenderer
+ from models.da3_depth_generator import get_da3_generator, DA3DepthGenerator
+ from models.bts.model.image_processor import make_image_processor, RGBProcessor
+-from models.bts.model.loss import ReconstructionLoss, compute_errors_l1ssim
++from models.bts.model.loss import ReconstructionLoss, compute_errors_l1ssim, occlusion_supervision_loss
+ from models.bts.model.models_bts import BTSNet
+ from models.bts.model.ray_sampler import ImageRaySampler, PatchRaySampler, RandomRaySampler
+ from scripts.inference_setup import render_profile, render_segmentation_profile
+@@ -43,6 +43,11 @@
+         self.z_near = config["z_near"]
+         self.z_far = config["z_far"]
+         self.ray_batch_size = config["ray_batch_size"]
++        self.occlusion_supervision_enabled = config.get("occlusion_supervision_enabled", True)
++        self.free_space_margin = config.get("free_space_margin", 0.5)
++        self.surface_band = config.get("surface_band", 0.5)
++        self.occlusion_conf_threshold = config.get("conf_threshold", 0.2)
++        self.occlusion_conf_epsilon = config.get("conf_epsilon", 0.1)
+         frames_render = config.get("n_frames_render", 2)
+         self.frame_sample_mode = config.get("frame_sample_mode", "default")
+         self.loss_from_single_img = config.get("loss_from_single_img", False)
+@@ -376,6 +381,7 @@
+                                                           conf_values=seg_da3_conf_values)
+             with profiler.record_function("trainer_render"):
+                 render_dict = self.renderer(all_rays, want_weights=True, want_alphas=True, want_rgb_samps=True,
++                                            want_z_samps=True,
+                                             da3_depths=all_da3_depths, adaptive_sampling_config=adaptive_config,
+                                             conf_values=all_da3_conf_values)
+ 
+@@ -383,6 +389,25 @@
+                 render_dict["fine"] = dict(render_dict["coarse"])
+                 render_segmentation_dict["fine"] = dict(render_segmentation_dict["coarse"])
+ 
++            # A5 occlusion supervision loss (DA3 depth as surface prior)
++            if self.occlusion_supervision_enabled and all_da3_depths is not None:
++                coarse_w = render_dict["coarse"]["weights"]
++                coarse_z = render_dict["coarse"]["z_samps"]
++                n_smps = coarse_w.shape[-1]
++                occ_loss, occ_stats = occlusion_supervision_loss(
++                    coarse_w.reshape(-1, n_smps),
++                    coarse_z.reshape(-1, n_smps),
++                    all_da3_depths.reshape(-1),
++                    all_da3_conf_values.reshape(-1) if all_da3_conf_values is not None else None,
++                    free_space_margin=self.free_space_margin,
++                    surface_band=self.surface_band,
++                    conf_threshold=self.occlusion_conf_threshold,
++                    conf_epsilon=self.occlusion_conf_epsilon,
++                    z_near=self.z_near,
++                )
++                data["_occlusion_loss"] = occ_loss
++                data["_occlusion_stats"] = occ_stats
++
+             render_dict["rgb_gt"] = all_rgb_gt
+             render_dict["rays"] = all_rays
+ 

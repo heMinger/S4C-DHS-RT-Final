@@ -48,8 +48,8 @@ SAMPLE_RANGE = None
 
 SIZE = 51.2 # Can be: 51.2, 25.6, 12.8
 SIZES = (12.8, 25.6, 51.2)
-# VOXEL_SIZE = 0.2 # Needs: 0.2 % VOXEL_SIZE == 0
-VOXEL_SIZE = 0.1
+VOXEL_SIZE = 0.2 # Needs: 0.2 % VOXEL_SIZE == 0
+# VOXEL_SIZE = 0.1
 
 USE_ADDITIONAL_INVALIDS = True  # True = 排除遮挡区域，IoU 更高
 # USE_ADDITIONAL_INVALIDS = False
