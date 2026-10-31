@@ -132,7 +132,11 @@ class BTSNet(torch.nn.Module):
         self.ray_attention_enabled = ray_attn_conf.get("enabled", False)
         if self.ray_attention_enabled:
             # E1: feed full mlp_input (image features + coord encoding) into RT
+            # E2: additionally append log(1+base_density) when use_base_density=true
+            self.ray_attention_use_base_density = ray_attn_conf.get("use_base_density", False)
             d_coord = self.encoder.latent_size + self.code_xyz.d_out  # 64 + 39 = 103
+            if self.ray_attention_use_base_density:
+                d_coord += 1  # + log(1+rho_base)
             self.ray_attention = RaySigmaCorrector(
                 d_coord=d_coord,
                 d_model=ray_attn_conf.get("d_model", 32),
@@ -145,6 +149,10 @@ class BTSNet(torch.nn.Module):
             self.empty_feature = nn.Parameter(torch.randn((self.encoder.latent_size,), requires_grad=True))
 
         self._scale = 0
+
+        # RT 密度诊断开关: 设 True 后, forward 会把 RT 前/残差/后密度存到 self._rt_diagnostics
+        self.return_rt_diagnostics = conf.get("return_rt_diagnostics", False)
+        self._rt_diagnostics = None
 
     def set_scale(self, scale):
         self._scale = scale
@@ -410,11 +418,22 @@ class BTSNet(torch.nn.Module):
             raw_sigma = mlp_output[..., :1]
 
             # Ray Sigma Correction: adjust raw sigma using depth-position attention
+            sigma_correction = None
+            rt_base_sigma = None
             if (self.ray_attention_enabled and ray_K is not None
                     and ray_K > 1 and n_pts % ray_K == 0):
                 # E1: pass full mlp_input (image features + coord encoding) so RT
                 # sees appearance evidence, not just coordinate encoding.
-                sigma_correction = self.ray_attention(mlp_input, ray_K)
+                # E2: append log(1+base_density) as a density-prior signal.
+                if getattr(self, "return_rt_diagnostics", False):
+                    # RT 前密度: softplus(raw_sigma) 修正前
+                    rt_base_sigma = F.softplus(raw_sigma).detach()
+                rt_input = mlp_input
+                if getattr(self, "ray_attention_use_base_density", False):
+                    base_density = F.softplus(raw_sigma)
+                    base_feat = torch.log1p(base_density).detach()
+                    rt_input = torch.cat([mlp_input, base_feat], dim=-1)
+                sigma_correction = self.ray_attention(rt_input, ray_K)
                 raw_sigma = raw_sigma + sigma_correction
 
             if self.sample_color:
@@ -426,6 +445,21 @@ class BTSNet(torch.nn.Module):
                 rgb = F.sigmoid(rgb)
                 invalid_colors = invalid_features.unsqueeze(-2)
                 nv = 1
+
+            if getattr(self, "return_rt_diagnostics", False):
+                if sigma_correction is None:
+                    # 本次调用未应用 RT (或模型无 RT): 前后一致, 残差为 0
+                    self._rt_diagnostics = {
+                        "base_sigma": sigma.detach(),
+                        "residual": torch.zeros_like(sigma),
+                        "post_sigma": sigma.detach(),
+                    }
+                else:
+                    self._rt_diagnostics = {
+                        "base_sigma": rt_base_sigma,
+                        "residual": sigma_correction.detach(),
+                        "post_sigma": sigma.detach(),
+                    }
 
             if self.empty_empty:
                 sigma[invalid_features[..., 0]] = 0

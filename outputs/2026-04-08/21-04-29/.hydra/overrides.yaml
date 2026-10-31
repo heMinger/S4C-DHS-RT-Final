@@ -1,0 +1,2 @@
+- resume_from=/home/lmh/s4c-adaptive-sampling1/out/kitti_360/kitti_360_backend-None-1_20260316-173839/training_checkpoint_218000-bp.pt
+- reset_training_state=true

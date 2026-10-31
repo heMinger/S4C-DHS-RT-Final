@@ -1,0 +1,211 @@
+#!/usr/bin/env python
+"""
+采样点误差诊断脚本 (纯 CPU, 无需模型/GPU)
+=============================================
+
+目的:
+    定量分解三维 Recall 低的原因 —— 是"采样点误差"还是"预测深度误差"。
+
+背景 (三种深度):
+    d_da3 : DA3 先验深度 (自适应采样的中心), 轴向 z, 单位米
+    d_pred: 模型渲染深度 (预测值)
+    d_gt  : LiDAR 真值深度, 轴向 z, 单位米
+
+分解:
+    * 采样点误差 = |d_da3 - d_gt|   (本脚本统计, 与模型无关, 固定值)
+    * 预测深度误差 = |d_pred - d_gt| (训练 validate 已记录 a1_lidar / abs_rel_lidar)
+
+本脚本输出 (按距离分桶 <12.8 / 12.8-25.6 / >25.6 米, 与 SSC 三维评估一致):
+    1. abs_rel / RMSE / a1(1.25)  —— 采样中心离真实表面有多远
+    2. 采样带命中率 (2*sigma)     —— 真实表面是否落在 DHS 采样带内
+       sigma 复现 nerf.py sample_adaptive 的公式:
+           norm_conf = clip((conf-1)/5.5535, 0.1, 1.0)
+           sigma = max(0.5, 0.12 / norm_conf * d_da3)
+
+判读:
+    * 命中率高 + abs_rel 大 => 采样带盖住了表面但带很宽(远距离 sigma 大),
+      32 个表面点铺在宽带上分辨率不够 —— 采样点稀疏是主因。
+    * 命中率低              => DA3 先验本身偏, 采样带直接错失表面 —— 采样中心误差是主因。
+    * 命中率高 + abs_rel 小 => 采样没问题, 应转而看预测深度误差 (a1_lidar)。
+
+说明:
+    DA3 与 LiDAR 深度均为轴向 z。相对误差 (abs_rel / a1 / 命中率) 在轴向 z 与
+    沿射线距离下几乎等价 (二者仅差 cos(theta) 因子), 故用轴向 z 直接比较。
+    仅绝对 sigma 带宽在远视场有 <15% 偏差, 不影响命中率判读。
+
+用法:
+    python scripts/diagnose_sampling_depth_error.py [--max-samples N]
+"""
+import argparse
+import os
+import sys
+
+import numpy as np
+from omegaconf import OmegaConf
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from datasets.data_util import make_datasets
+
+ABSREL_PRIOR = 0.12
+MIN_THICKNESS = 0.5
+CONF_EPSILON = 0.1
+DIST_BINS = [(0.0, 12.8), (12.8, 25.6), (25.6, float("inf"))]
+
+
+def bin_name(lo, hi):
+    if lo == 0:
+        return f"<{hi}"
+    if hi == float("inf"):
+        return f">{lo}"
+    return f"{lo}-{hi}"
+
+
+def norm_conf(conf):
+    return np.clip((conf - 1.0) / 5.5535, CONF_EPSILON, 1.0)
+
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--max-samples", type=int, default=None,
+                        help="最多诊断多少样本 (默认全部 test split, 上限 256)")
+    parser.add_argument("--n-surface", type=int, default=32,
+                        help="表面采样点数 (默认 32, 对应当前 DHS 配置)")
+    parser.add_argument("--n-global", type=int, default=32,
+                        help="全局采样点数 (默认 32)")
+    parser.add_argument("--voxel-size", type=float, default=0.2,
+                        help="体素尺寸/米 (默认 0.2, 对应 SSC VOXEL)")
+    parser.add_argument("--z-near", type=float, default=3.0)
+    parser.add_argument("--z-far", type=float, default=80.0)
+    args = parser.parse_args()
+
+    data_conf = OmegaConf.load("configs/data/kitti_360.yaml")
+    _, test_dataset = make_datasets(data_conf)
+
+    # 只加载诊断所需的 depth / lidar / conf, 关闭无关分支以加速
+    test_dataset.return_depth = True
+    test_dataset.return_lidar_depth = True
+    test_dataset.return_stereo = False
+    test_dataset.return_fisheye = False
+    test_dataset.return_segmentation = False
+    test_dataset.frame_count = 1
+    test_dataset.color_aug = False
+    test_dataset.length = min(256, test_dataset.length)
+    if args.max_samples is not None:
+        test_dataset.length = min(args.max_samples, test_dataset.length)
+
+    n = test_dataset.length
+    print(f"诊断样本数: {n}")
+
+    # 每桶累积: abs_err / rel_err / hit(2sigma) / surface间距 / global间距 / count
+    acc = {bin_name(lo, hi): {"abs_err": [], "rel_err": [], "hit": [],
+                              "surf_sp": [], "glob_sp": [], "n": 0}
+           for lo, hi in DIST_BINS}
+    total_px = 0
+    total_hit = 0
+
+    # 逆深度均匀采样的点间距因子: dz/dt = z^2 * (1/near - 1/far)
+    inv_disp = (1.0 / args.z_near) - (1.0 / args.z_far)
+
+    for i in range(n):
+        data = test_dataset[i]
+        da3 = np.asarray(data["depths"][0], dtype=np.float32)       # (H, W)
+        lidar = np.asarray(data["lidar_depths"][0], dtype=np.float32)
+        conf = np.asarray(data["confs"][0], dtype=np.float32) if len(data.get("confs", [])) else np.ones_like(da3)
+
+        valid = (lidar > 0) & (da3 > 0)
+        if valid.sum() == 0:
+            continue
+
+        d_gt = lidar[valid]
+        d_da3 = da3[valid]
+        c = conf[valid]
+
+        abs_err = np.abs(d_da3 - d_gt)
+        rel_err = abs_err / d_gt
+
+        nc = norm_conf(c)
+        effective_absrel = ABSREL_PRIOR / nc
+        sigma = np.maximum(MIN_THICKNESS, effective_absrel * d_da3)
+        hit = abs_err <= 2.0 * sigma
+
+        # 采样点间距 (沿射线方向, 单位米):
+        #   surface: n_surface 个点均匀铺在 [d-2σ, d+2σ] -> 间距 = 4σ / n_surface
+        #   global : 逆深度均匀, 间距 = d^2 * (1/near - 1/far) / n_global
+        surf_sp = 4.0 * sigma / args.n_surface
+        glob_sp = (d_gt ** 2) * inv_disp / args.n_global
+
+        total_px += d_gt.size
+        total_hit += hit.sum()
+
+        for lo, hi in DIST_BINS:
+            mask = (d_gt > lo) & (d_gt <= hi)
+            if mask.sum() == 0:
+                continue
+            key = bin_name(lo, hi)
+            acc[key]["abs_err"].append(abs_err[mask])
+            acc[key]["rel_err"].append(rel_err[mask])
+            acc[key]["hit"].append(hit[mask])
+            acc[key]["surf_sp"].append(surf_sp[mask])
+            acc[key]["glob_sp"].append(glob_sp[mask])
+            acc[key]["n"] += int(mask.sum())
+
+    print("\n" + "=" * 90)
+    print(f"{'距离桶(米)':<16} {'像素数':>10} {'abs_rel':>10} {'RMSE':>10} {'a1(1.25)':>10} {'2σ命中率':>10}")
+    print("-" * 90)
+    for lo, hi in DIST_BINS:
+        key = bin_name(lo, hi)
+        a = acc[key]
+        if a["n"] == 0:
+            print(f"{key:<16} {0:>10} {'-':>10} {'-':>10} {'-':>10} {'-':>10}")
+            continue
+        abs_err = np.concatenate(a["abs_err"])
+        rel_err = np.concatenate(a["rel_err"])
+        hit = np.concatenate(a["hit"])
+        rmse = float(np.sqrt((abs_err ** 2).mean()))
+        a1 = float((rel_err < 0.25).mean())
+        hit_rate = float(hit.mean())
+        abs_rel = float(rel_err.mean())
+        print(f"{key:<16} {a['n']:>10} {abs_rel:>10.4f} {rmse:>10.3f} {a1:>10.4f} {hit_rate:>10.4f}")
+    print("=" * 90)
+    print(f"整体: 像素数 {total_px}, 2σ命中率 {total_hit / max(total_px, 1):.4f}")
+    print()
+
+    # ============================================================
+    # 覆盖分析: 采样点间距 vs 体素尺寸 (voxel)
+    #   间距 > voxel => 占用体素内可能没有采样点 => Recall 结构性上限
+    #   覆盖达标率 = 间距 <= voxel 的像素占比 (该射线在表面带内达到体素级分辨率)
+    # ============================================================
+    print("=" * 100)
+    print("采样点覆盖分析 (voxel = {:.2f}m)".format(args.voxel_size))
+    print(f"{'距离桶(米)':<16} {'surface间距':>12} {'global间距':>12} "
+          f"{'surface达标':>12} {'global达标':>12}")
+    print("-" * 100)
+    for lo, hi in DIST_BINS:
+        key = bin_name(lo, hi)
+        a = acc[key]
+        if a["n"] == 0:
+            print(f"{key:<16} {'-':>12} {'-':>12} {'-':>12} {'-':>12}")
+            continue
+        surf_sp = np.concatenate(a["surf_sp"])
+        glob_sp = np.concatenate(a["glob_sp"])
+        surf_mean = float(surf_sp.mean())
+        glob_mean = float(glob_sp.mean())
+        surf_ok = float((surf_sp <= args.voxel_size).mean())
+        glob_ok = float((glob_sp <= args.voxel_size).mean())
+        print(f"{key:<16} {surf_mean:>12.3f} {glob_mean:>12.3f} "
+              f"{surf_ok:>12.4f} {glob_ok:>12.4f}")
+    print("=" * 100)
+    print()
+    print("判读:")
+    print("  - 远距离 (>25.6m) 若 abs_rel 大但命中率仍高 => 采样带虽盖住表面但带过宽,")
+    print("    表面点铺在宽带上分辨率不足 (sigma ∝ 距离, 远距离 ~0.75m/pt vs 近处 ~0.075m/pt)。")
+    print("  - 若某距离桶命中率明显低 => DA3 先验在该距离系统性偏, 采样中心错失表面。")
+    print("  - 'surface达标率' 是 Recall 的结构性上限: 体素内没采样点 => 无法预测占用。")
+    print("    达标率 < 1 的桶, 提升 n_surface 或收紧 sigma 是唯一出路 (E2 预测侧无能为力)。")
+    print("  - 结合训练 validate 的 a1_lidar / abs_rel_lidar (预测 vs LiDAR GT) 即可")
+    print("    定量区分 '采样误差' vs '预测误差'。")
+
+
+if __name__ == "__main__":
+    main()

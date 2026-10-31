@@ -1,0 +1,2 @@
+- resume_from=/home/lmh/s4c-DHS-RayTransformer/out/s4c_dhs_rt_e1/s4c_dhs_rt_e1_backend-None-1_20261024-010315/training_checkpoint_53500.pt
+- reset_training_state=false

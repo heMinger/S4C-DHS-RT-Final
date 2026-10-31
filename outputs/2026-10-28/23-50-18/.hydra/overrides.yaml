@@ -1,0 +1,3 @@
+- resume_from=/home/lmh/s4c-DHS-RayTransformer/out/ablation_z2dist/fixed/ablation_z2dist_fixed_backend-None-1_stop-on-5000/training_checkpoint_4500.pt
+- reset_training_state=false
+- stop_iteration=30000

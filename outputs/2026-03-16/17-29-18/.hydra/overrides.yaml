@@ -1,0 +1,4 @@
+- stop_iteration=2
+- checkpoint_every=9999999
+- validate_every=9999999
+- visualize_every=9999999

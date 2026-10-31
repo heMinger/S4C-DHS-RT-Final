@@ -1,10 +1,8 @@
 # Created by .ignore support plugin (hsz.mobi)
 
 out/
-outputs/
 assets/
 data/
-datasets/
 figures/
 
 ### Python template
