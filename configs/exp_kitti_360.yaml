@@ -8,8 +8,15 @@ model: "bts"
 output_path: "out/kitti_360"
 
 num_epochs: 60
-batch_size: 8
-accumulation_steps: 2
+batch_size: 2
+accumulation_steps: 32
+# 有效 batch = batch_size x ray_batch_size x accumulation_steps = 2 x 1024 x 32 = 65536 (与原 8x4096x2 一致)
+
+# A5 warm-start: 从 S4C(176000) 权重出发, 只加载权重, optimizer/scheduler/iteration 从零
+resume_from: /home/lmh/s4c/out/training_checkpoint_176000.pt
+reset_training_state: true
+# 与 E1 并发: 混合精度省显存 (utils/base_trainer.py 的 GradScaler/autocast)
+with_amp: true
 
 use_backbone: false
 grad_clip_max_norm: 1.0
@@ -100,7 +107,7 @@ model_conf:
 
     sample_mode: patch
     patch_size: 8
-    ray_batch_size: 4096
+    ray_batch_size: 1024
 
     flip_augmentation: true
 
@@ -150,4 +157,5 @@ renderer:
     white_bkgd : false
     lindisp: true
     hard_alpha_cap: true
-    eval_batch_size: 200000
+    # 评估阶段显存峰值(与 E1 并发时 100000 会 OOM, 降为 50000 降低单次 chunk 显存)
+    eval_batch_size: 50000
